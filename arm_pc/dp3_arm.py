@@ -17,6 +17,7 @@ class armCtrl():
         hostname = '172.16.0.2'
         self.arm = panda_py.Panda(hostname)
         self.gripper = panda_py.libfranka.Gripper(hostname)
+        self.gripper.homing()
         # Recover robot to a default state
         self.arm.recover()
 
@@ -31,64 +32,66 @@ class armCtrl():
         获取机械臂当前的位姿（x, y, z, roll, pitch, yaw）,一共frames_num帧。
         """
         print("执行 get_current_pose 函数")
-        frame_ind=0
-        agent_pos_frames=[]
-        while frame_ind<self.n_obs_steps:
-            trans = self.arm.get_position() # 获取末端执行器的当前位姿
-            # print(f"transition = {trans}")
-            quat = self.arm.get_orientation()
-            eluer= self.quaternion_to_euler(quat)
-            # print(f"eluer = {eluer}")
-            gripper_width=self.gripper.read_once().width
-            eluer.append(gripper_width)
-            agent_pos=np.concatenate((trans,eluer),axis=0).tolist()
-            # print(f"agent_pos = {agent_pos}")
-            # print(type(agent_pos))
-            # agent_pos_frames.append(torch.Tensor(agent_pos))
-            agent_pos_frames.append(agent_pos)
-            frame_ind+=1
+
+        trans = self.arm.get_position() # 获取末端执行器的当前位姿
+        # print(f"transition = {trans}")
+        quat = self.arm.get_orientation()
+        eluer= self.quaternion_to_euler(quat)
+        # print(f"eluer = {eluer}")
+        gripper_width=self.gripper.read_once().width
+        eluer.append(gripper_width)
+        agent_pos=np.concatenate((trans,eluer),axis=0).tolist()
+        # print(f"agent_pos = {agent_pos}")
+        # print(type(agent_pos))
+        # agent_pos_frames.append(torch.Tensor(agent_pos))
+
         # return torch.stack(agent_pos_frames,dim=0)
         print("执行结束")
-        return agent_pos_frames
+        return agent_pos
 
-    def move_relative(self,actions):
+    def move_relative(self,action):
         print("执行 move_relative 函数")
         """
         按照相对位移和旋转移动机械臂。
         """
-        action_ind=0
+
         # action_frames_num=actions.shape[0]
 
         # Initialize robot controller
         controller = panda_py.controllers.CartesianImpedance()
         self.arm.start_controller(controller)
         # print(actions)
+        start_time = time.perf_counter()
+        print(f"动作： {action}")
+        # 获取当前的位姿
+        current_translation=self.arm.get_position()
+        current_quat = self.arm.get_orientation()
+        current_rpy= self.quaternion_to_euler(current_quat)
 
-        while action_ind<self.n_action_steps:
-            start_time = time.perf_counter()
-            action=actions[action_ind]
-            print(f"第 {action_ind} 个动作： {action}")
-            # 获取当前的位姿
-            current_translation=self.arm.get_position()
-            current_quat = self.arm.get_orientation()
-            current_rpy= self.quaternion_to_euler(current_quat)
+        gripper_width=self.gripper.read_once().width
+        print(f"读夹爪的宽度 {gripper_width}")
 
-            # 计算新的目标位置
-            new_translation = current_translation + np.array(action[:3])
-            new_rpy = current_rpy + np.array(action[3:6])
+        # 计算新的目标位置
+        new_translation = current_translation + np.array(action[:3])
+        new_rpy = current_rpy + np.array(action[3:6])
+        new_gripper_width=gripper_width+action[6]
+        if new_gripper_width<0.06 or gripper_width<0.06:
+            new_gripper_width=0.0
 
-            new_quat=self.euler_to_quaternion(current_rpy)
+        new_quat=self.euler_to_quaternion(current_rpy)
+        print(f"平移： {new_translation}")
+        print(f"旋转： {new_rpy}")
+        print(f"夹爪: {new_gripper_width}")
 
-            # 移动到目标位置
-            # controller.set_control(new_translation, new_quat)
+        # 移动到目标位置
+        controller.set_control(new_translation, new_quat)
+        self.gripper.move(new_gripper_width, speed=SPEED)
 
-            # Maintain loop frequency at 1000 Hz
-            end_time = time.perf_counter()
-            loop_duration = end_time - start_time
-            loop_frequency = 1.0 / loop_duration
-            time.sleep(max(0, (1/1000) - loop_duration))
-
-            action_ind+=1
+        # Maintain loop frequency at 1000 Hz
+        end_time = time.perf_counter()
+        loop_duration = end_time - start_time
+        loop_frequency = 1.0 / loop_duration
+        time.sleep(max(0, (1/1000) - loop_duration))
         
         print("执行结束")
 
