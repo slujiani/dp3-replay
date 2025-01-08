@@ -4,7 +4,9 @@ import pickle
 import time
 from pynput import keyboard
 from threading import Event
+from threading import Thread, Lock
 import open3d as o3d
+import os
 
 def fps_point_cloud(frame_data,x_range=(-0.3, 0.3), y_range=(-0.32, 0.26), z_range=(0.58, 1.3), num_points=1024):
     # 提取 x, y, z 坐标
@@ -52,6 +54,38 @@ def fps_point_cloud(frame_data,x_range=(-0.3, 0.3), y_range=(-0.32, 0.26), z_ran
     downsampled_frame = np.hstack([selected_points, selected_rgb])  # (num_points, 6)
     return downsampled_frame
 
+
+
+color_images = []  # To store all color frames
+depth_images = []  # 用于存储 depth frame 的引用
+timestamps = []
+point_cloud_data = []
+batch_size=512
+batch_ind=0
+data_dir = "pour_water_data/"
+
+def save_batch():
+    """分批保存数据"""
+    global batch_ind
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+
+    color_path=os.path.join(data_dir,f"color_img_{batch_ind}.npy")
+    depth_path=os.path.join(data_dir,f"depth_img_{batch_ind}.npy")
+    timestamps_path=os.path.join(data_dir,f"timestamps_{batch_ind}.pkl")
+    point_cloud_path=os.path.join(data_dir,f"point_cloud_{batch_ind}.pkl")
+
+    np.save(color_path, np.array(color_images))
+    np.save(depth_path, np.array(depth_images))
+    with open(timestamps_path, "wb") as timestamps_file:
+        pickle.dump(timestamps, timestamps_file)
+    with open(point_cloud_path, "wb") as pointcloud_file:
+        pickle.dump(point_cloud_data, pointcloud_file)
+    
+    print(f"Batch {batch_ind} all saved.")
+    batch_ind+=1
+    
+
 quit_program = False
 
 def on_press(key):
@@ -63,7 +97,7 @@ def on_press(key):
     except AttributeError:
         pass
 
-def collect_images(color_path, depth_path, timestamps_path,point_cloud_file, fps=30):
+def collect_images(fps=30):
     """使用 keep() 方法采集 RGB 和深度数据"""
     pipeline = rs.pipeline()
     config = rs.config()
@@ -72,10 +106,7 @@ def collect_images(color_path, depth_path, timestamps_path,point_cloud_file, fps
     pipeline.start(config)
 
     align = rs.align(rs.stream.color)
-    color_images = []  # To store all color frames
-    depth_images = []  # 用于存储 depth frame 的引用
-    timestamps = []
-    point_cloud_data = []
+    
 
 
     crop_width, crop_height = 480, 480
@@ -135,10 +166,18 @@ def collect_images(color_path, depth_path, timestamps_path,point_cloud_file, fps
                     # 将帧加入列表
                     timestamps.append(timestamp)
 
-
-
-                    print(f"Frame {frame_ind}collected at timestamp {timestamp}.")
+                    print(f"Frame {frame_ind} collected at timestamp {timestamp}.")
+                    
                     frame_ind+=1
+
+                    if len(point_cloud_data)>= batch_size:
+                        with save_lock:
+                            Thread(target=save_data_thread).start()
+                            color_images.clear()
+                            depth_images.clear()
+                            timestamps.clear()
+                            point_cloud_data.clear()
+                            
                 except RuntimeError as e:
                     print(f"Frame timeout : {e}.")
                     continue
@@ -148,31 +187,29 @@ def collect_images(color_path, depth_path, timestamps_path,point_cloud_file, fps
 
     finally:
         pipeline.stop()
-
-        # 保存 RGB 和深度帧数据
-        # color_images = [np.asanyarray(f.get_data()) for f in color_images]
-        # depth_images = [np.asanyarray(f.get_data()) for f in depth_images]
-
-        np.save(color_path, np.array(color_images))
-        np.save(depth_path, np.array(depth_images))
-        with open(timestamps_path, "wb") as f:
-            pickle.dump(timestamps, f)
-
-        with open(point_cloud_file, "wb") as f:
-            pickle.dump(point_cloud_data, f)
-        print(f"Point cloud data saved to {point_cloud_file}")
-
-        print("Saved RGB and depth images to disk.")
+        
+        if len(point_cloud_data)>0:
+            with save_lock:
+                save_batch()
+                color_images.clear()
+                depth_images.clear()
+                timestamps.clear()
+                point_cloud_data.clear()
 
 
 
+
+save_lock = Lock()
+
+def save_data_thread():
+    with save_lock:
+        save_batch()
+    
 
     
 if __name__ == "__main__":
-    color_img_path="pour_water_data/color_images.npy"
-    depth_img_path="pour_water_data/depth_images.npy"
-    bag_path="pour_water_data/rgb_depth.bag"
-    timestamps_path="pour_water_data/timestamps.pkl"
-    point_cloud_path="pour_water_data/point_cloud.pkl"
-    """太慢了，两三秒一帧"""
-    collect_images(color_img_path,depth_img_path,timestamps_path,point_cloud_path)
+    
+    collect_images()
+    """还需要对点云进行降采样"""
+    
+
